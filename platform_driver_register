@@ -1,0 +1,109 @@
+From Kernel 4.19
+
+platform_driver_register() 是用來註冊平台驅動程序
+如果可以在 kernel 中找到使用驅動程序的設備 則調用 probe()
+
+此函數的主要過程如下
+
+在某隻驅動程序內  必須實作以下函式
+xxx_init(...)
+並且經由 module_init(xxx_init) 引入此驅動程序
+
+所以會有 
+static int __init xxx_init(void)
+{
+  return platform_driver_register(&cam_req_mgr_driver);
+}
+
+From the patch, https://patchwork.kernel.org/project/linux-arm-kernel/patch/51A040D2.20708@huawei.com/
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
+In "include/linux/platform_device.h", this api is defined as 
+#define platform_driver_register(drv) __platform_driver_register(drv, THIS_MODULE)  // <==
+extern int __platform_driver_register(struct platform_driver *, struct module *); 
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
+And, in "drivers/base/platform.c", this api is implemented as below
+int __platform_driver_register(struct platform_driver *drv, struct module *owner)
+{
+  ...
+  return driver_register(&drv->driver); // <==
+}
+EXPORT_SYMBOL_GPL(__platform_driver_register);
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
+In "drivers/base/driver.c", we have 
+int driver_register(struct device_driver *drv)
+{
+  ...
+  ret = bus_add_driver(drv); // <==
+  ...
+  return ret;
+}
+EXPORT_SYMBOL_GPL(driver_register);
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
+In "drivers/base/bus.c", we have
+int bus_add_driver(struct device_Driver *drv)
+{
+  ...
+  if(drv->bus->p->driver_autoprobe){
+    ...
+    error = driver_attach(drv); // <==
+    if(error){
+      goto out_unregister;
+    }
+  }
+  module_add_driver(drv->owner, drv);
+  
+  error = driver_create_file(drv, &driver_attr_uevent);
+  if(...) ...
+  error = driver_add_groups(drv, bus->drv_groups);
+  if(...) ...
+  ...
+  return 0;
+  ...
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
+In "drivers/base/dd.c", it is 
+int driver_attach(struct device_driver *drv)
+{
+  return bus_for_each_dev(drv->bus, NU::, drv, __driver_attach); // 監測到bus設備  調用 __driver_attach() // <==
+}
+
+static int __driver_attach(struct device *dev, void *data_
+{
+  ...
+  if(!dev->p->dead && !dev->driver){
+    driver_probe_device(drv, dev); // <==
+  }
+  ...
+  return 0;
+}
+
+int driver_probe_device(struct device_driver *drv, struct device *dev)
+{
+  ...
+  ret = really_probe(dev, drv); // <==
+  ...
+}
+
+static int really_probe(struct device *dev, struct device_driver *drv)
+{
+  ...
+  dev->driver = drv;
+  ...
+  if(driver_sysfs_add(dev)){
+    ...
+  }
+  ...
+  if(dev->bus->probe){
+    ...
+  } else if (drv->probe){
+    ret = drv->probe(dev); // <== 調用driver的probe(), dev為設備結構體
+    ...
+  }
+  ...
+}
+
